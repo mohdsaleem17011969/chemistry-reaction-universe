@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chemistry Reaction Universe</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Knowledge base</p>
+          <h1>Chemistry Reaction Universe</h1>
+        </div>
+        <div class="actions">
+          <button id="loadSpeciesBtn">Load Species</button>
+          <button id="loadReactionsBtn">Load Reactions</button>
+          <input id="searchInput" type="text" placeholder="Search species..." />
+        </div>
+      </header>
+
+      <section class="summary-grid">
+        <div class="card stat-card">
+          <span>Species</span>
+          <strong id="speciesCount">0</strong>
+        </div>
+        <div class="card stat-card">
+          <span>Reactions</span>
+          <strong id="reactionCount">0</strong>
+        </div>
+        <div class="card stat-card">
+          <span>API</span>
+          <strong>FastAPI</strong>
+        </div>
+      </section>
+
+      <section class="content-grid">
+        <div class="card">
+          <h2>Species</h2>
+          <div id="speciesList" class="item-list"></div>
+        </div>
+
+        <div class="card">
+          <h2>Reactions</h2>
+          <div id="reactionList" class="item-list"></div>
+        </div>
+      </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
