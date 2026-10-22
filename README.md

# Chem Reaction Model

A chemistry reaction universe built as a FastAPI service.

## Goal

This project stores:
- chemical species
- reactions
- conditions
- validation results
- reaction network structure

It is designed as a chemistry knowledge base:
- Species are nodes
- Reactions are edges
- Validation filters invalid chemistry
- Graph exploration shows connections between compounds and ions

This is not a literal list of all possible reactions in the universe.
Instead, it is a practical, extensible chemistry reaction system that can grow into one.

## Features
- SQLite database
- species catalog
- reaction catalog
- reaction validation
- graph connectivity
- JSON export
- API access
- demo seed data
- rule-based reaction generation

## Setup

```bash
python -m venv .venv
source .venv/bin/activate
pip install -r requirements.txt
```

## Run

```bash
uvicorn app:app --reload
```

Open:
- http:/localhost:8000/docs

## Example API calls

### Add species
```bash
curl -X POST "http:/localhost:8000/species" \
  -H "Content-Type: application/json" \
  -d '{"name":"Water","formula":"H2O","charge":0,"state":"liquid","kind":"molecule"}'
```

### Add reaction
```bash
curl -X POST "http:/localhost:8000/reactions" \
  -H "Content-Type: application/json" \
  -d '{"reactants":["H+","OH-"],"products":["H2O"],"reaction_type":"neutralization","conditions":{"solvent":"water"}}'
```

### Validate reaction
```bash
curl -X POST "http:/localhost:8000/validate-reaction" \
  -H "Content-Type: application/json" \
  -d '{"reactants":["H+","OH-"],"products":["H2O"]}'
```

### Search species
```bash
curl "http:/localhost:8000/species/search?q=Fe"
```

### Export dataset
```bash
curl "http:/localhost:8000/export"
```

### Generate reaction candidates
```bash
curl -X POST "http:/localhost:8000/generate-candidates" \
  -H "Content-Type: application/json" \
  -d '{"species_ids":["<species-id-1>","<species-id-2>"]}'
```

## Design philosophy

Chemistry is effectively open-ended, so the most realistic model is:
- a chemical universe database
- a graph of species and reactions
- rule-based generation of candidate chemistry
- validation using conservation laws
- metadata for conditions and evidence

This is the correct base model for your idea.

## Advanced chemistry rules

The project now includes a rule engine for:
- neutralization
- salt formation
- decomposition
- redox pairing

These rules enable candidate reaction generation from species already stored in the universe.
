@@ -1,0 +1,164 @@
+import uuid
+from typing import Dict, List, Any
+
+from chemistry_core import ChemistryDB, Species, Reaction
+
+
+class RuleEngine:
+    """Generate reaction candidates using chemistry rules."""
+
+    def __init__(self, db: ChemistryDB):
+        self.db = db
+
+    def _build_species_by_id(self, species_ids: List[str]) -> List[Species]:
+        out = []
+        for sid in species_ids:
+            species = self.db.get_species_by_id(sid)
+            if species is not None:
+                out.append(species)
+        return out
+
+    def generate_candidates(self, species_ids: List[str]) -> List[Dict[str, Any]]:
+        species = self._build_species_by_id(species_ids)
+        candidates: List[Dict[str, Any]] = []
+
+        # Neutralization: H+ + OH- -> H2O
+        for i, a in enumerate(species):
+            for j, b in enumerate(species):
+                if i == j:
+                    continue
+                if a.formula == "H+" and b.formula == "OH-":
+                    candidates.append({
+                        "reaction_type": "neutralization",
+                        "reactants": [a.species_id, b.species_id],
+                        "products": [self._lookup_or_create_species_id("Water", "H2O", 0, "liquid", "molecule")],
+                        "conditions": {"solvent": "water", "temperature_k": 298.15},
+                        "notes": "Acid-base neutralization",
+                    })
+                if a.formula == "OH-" and b.formula == "H+":
+                    candidates.append({
+                        "reaction_type": "neutralization",
+                        "reactants": [a.species_id, b.species_id],
+                        "products": [self._lookup_or_create_species_id("Water", "H2O", 0, "liquid", "molecule")],
+                        "conditions": {"solvent": "water", "temperature_k": 298.15},
+                        "notes": "Acid-base neutralization",
+                    })
+
+        # Salt formation: cation + anion -> ionic salt
+        for i, a in enumerate(species):
+            for j, b in enumerate(species):
+                if i == j:
+                    continue
+                if a.charge > 0 and b.charge < 0:
+                    product_formula = f"{a.formula}{b.formula}"
+                    product_name = f"{a.name} + {b.name} salt"
+                    candidates.append({
+                        "reaction_type": "salt_formation",
+                        "reactants": [a.species_id, b.species_id],
+                        "products": [self._lookup_or_create_species_id(product_name, product_formula, 0, "solid", "compound")],
+                        "conditions": {"solvent": "aqueous"},
+                        "notes": "Ion pairing / ionic salt formation",
+                    })
+
+        # Decomposition: if a compound has multiple elements, produce fragments
+        for sp in species:
+            if sp.kind in {"molecule", "compound"} and len(sp.formula) > 2:
+                candidates.append({
+                    "reaction_type": "decomposition",
+                    "reactants": [sp.species_id],
+                    "products": [
+                        self._lookup_or_create_species_id(f"{sp.name} fragment 1", f"{sp.formula[0]}", 0, "unknown", "unknown"),
+                        self._lookup_or_create_species_id(f"{sp.name} fragment 2", f"{sp.formula[-1]}", 0, "unknown", "unknown"),
+                    ],
+                    "conditions": {"temperature_k": 500},
+                    "notes": "Simple decomposition candidate",
+                })
+
+        # Redox candidate: different oxidation states in same species family
+        seen = set()
+        for i, a in enumerate(species):
+            for j, b in enumerate(species):
+                if i == j:
+                    continue
+                if a.kind == b.kind and abs(a.charge - b.charge) >= 1:
+                    key = tuple(sorted([a.species_id, b.species_id]))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append({
+                        "reaction_type": "redox_pair",
+                        "reactants": [a.species_id, b.species_id],
+                        "products": [
+                            self._lookup_or_create_species_id(f"{a.name} oxidized", a.formula, a.charge + 1, a.state, a.kind),
+                            self._lookup_or_create_species_id(f"{b.name} reduced", b.formula, b.charge - 1, b.state, b.kind),
+                        ],
+                        "conditions": {"environment": "aqueous"},
+                        "notes": "Possible redox transformation between oxidation states",
+                    })
+
+        # Deduplicate candidates by reactants/products signature
+        unique = []
+        signatures = set()
+        for c in candidates:
+            signature = (
+                tuple(c["reaction_type"]),
+                tuple(c["reactants"]),
+                tuple(c["products"]),
+            )
+            if signature not in signatures:
+                signatures.add(signature)
+                unique.append(c)
+
+        return unique
+
+    def _lookup_or_create_species_id(
+        self,
+        name: str,
+        formula: str,
+        charge: int,
+        state: str,
+        kind: str,
+    ) -> str:
+        existing = self.db.get_species_by_formula(formula)
+        if existing:
+            return existing[0].species_id
+
+        species = Species(
+            species_id=str(uuid.uuid4()),
+            name=name,
+            formula=formula,
+            charge=charge,
+            state=state,
+            kind=kind,
+            properties={"generated": True},
+        )
+        self.db.add_species(species)
+        return species.species_id
+
+    def create_reactions_from_candidates(self, species_ids: List[str]) -> List[Reaction]:
+        generated: List[Reaction] = []
+        for candidate in self.generate_candidates(species_ids):
+            reactants = candidate["reactants"]
+            products = candidate["products"]
+            valid, reason = self.db.validate_reaction(reactants, products)
+            reaction = Reaction(
+                reaction_id=str(uuid.uuid4()),
+                reactants=reactants,
+                products=products,
+                reaction_type=candidate["reaction_type"],
+                conditions=candidate.get("conditions", {}),
+                notes=candidate.get("notes", ""),
+                valid=valid,
+                validity_reason=reason,
+            )
+            self.db.add_reaction(reaction)
+            generated.append(reaction)
+        return generated
+
+    def list_rule_types(self) -> List[str]:
+        return [
+            "neutralization",
+            "salt_formation",
+            "decomposition",
+            "redox_pair",
+        ]

@@ -1,0 +1,167 @@
+from typing import List, Dict, Any, Optional
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from chemistry_core import ChemistryDB, Species, Reaction, build_demo_species
+from chemistry_graph import build_demo_graph
+from chemistry_rules import RuleEngine
+
+
+db = ChemistryDB("chemistry_universe.db")
+
+if len(db.list_species()) == 0:
+    for sp in build_demo_species():
+        db.add_species(sp)
+
+app = FastAPI(title="Chem Reaction Model")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+class SpeciesCreate(BaseModel):
+    name: str
+    formula: str
+    charge: int = 0
+    state: str = "unknown"
+    kind: str = "molecule"
+    properties: Optional[Dict[str, Any]] = None
+
+
+class ReactionCreate(BaseModel):
+    reactants: List[str]
+    products: List[str]
+    reaction_type: str = "generic"
+    conditions: Dict[str, Any] = {}
+    notes: str = ""
+    delta_g: Optional[float] = None
+    equilibrium_constant: Optional[float] = None
+    activation_energy: Optional[float] = None
+
+
+class ValidateRequest(BaseModel):
+    reactants: List[str]
+    products: List[str]
+
+
+class CandidateRequest(BaseModel):
+    species_ids: List[str]
+
+
+@app.get("/")
+def index():
+    return FileResponse("static/index.html")
+
+
+@app.get("/dashboard")
+def dashboard():
+    return FileResponse("static/index.html")
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/species")
+def list_species():
+    return [sp.__dict__ for sp in db.list_species()]
+
+
+@app.get("/species/search")
+def search_species(q: str = Query(..., description="Search species by name, formula, or kind")):
+    return [sp.__dict__ for sp in db.search_species(q)]
+
+
+@app.get("/species/{species_id}")
+def get_species(species_id: str):
+    sp = db.get_species_by_id(species_id)
+    if not sp:
+        raise HTTPException(status_code=404, detail="Species not found")
+    return sp.__dict__
+
+
+@app.post("/species")
+def create_species(payload: SpeciesCreate):
+    sp = Species(
+        species_id=str(__import__("uuid").uuid4()),
+        name=payload.name,
+        formula=payload.formula,
+        charge=payload.charge,
+        state=payload.state,
+        kind=payload.kind,
+        properties=payload.properties or {},
+    )
+    db.add_species(sp)
+    return sp.__dict__
+
+
+@app.get("/reactions")
+def list_reactions():
+    return [rxn.__dict__ for rxn in db.list_reactions()]
+
+
+@app.get("/reactions/{species_id}")
+def reactions_for_species(species_id: str):
+    return [rxn.__dict__ for rxn in db.reactions_for_species(species_id)]
+
+
+@app.get("/reaction-rules")
+def reaction_rules():
+    engine = RuleEngine(db)
+    return {"rules": engine.list_rule_types()}
+
+
+@app.post("/generate-candidates")
+def generate_candidates(payload: CandidateRequest):
+    engine = RuleEngine(db)
+    return {"candidates": engine.generate_candidates(payload.species_ids)}
+
+
+@app.post("/generate-reactions")
+def generate_reactions(payload: CandidateRequest):
+    engine = RuleEngine(db)
+    reactions = engine.create_reactions_from_candidates(payload.species_ids)
+    return {"reactions": [rxn.__dict__ for rxn in reactions]}
+
+
+@app.post("/reactions")
+def create_reaction(payload: ReactionCreate):
+    valid, reason = db.validate_reaction(payload.reactants, payload.products)
+    rxn = Reaction(
+        reaction_id=str(__import__("uuid").uuid4()),
+        reactants=payload.reactants,
+        products=payload.products,
+        reaction_type=payload.reaction_type,
+        conditions=payload.conditions,
+        delta_g=payload.delta_g,
+        equilibrium_constant=payload.equilibrium_constant,
+        activation_energy=payload.activation_energy,
+        notes=payload.notes,
+        valid=valid,
+        validity_reason=reason,
+    )
+    db.add_reaction(rxn)
+    return rxn.__dict__
+
+
+@app.post("/validate-reaction")
+def validate_reaction(payload: ValidateRequest):
+    ok, reason = db.validate_reaction(payload.reactants, payload.products)
+    return {"valid": ok, "reason": reason}
+
+
+@app.get("/graph/{species_id}")
+def graph_for_species(species_id: str):
+    graph = build_demo_graph()
+    return {
+        "species_id": species_id,
+        "neighbors": graph.neighbors(species_id),
+        "reactions": [rxn.__dict__ for rxn in graph.reactions_for_species(species_id)],
+    }
+
+
+@app.get("/export")
+def export_json():
+    path = db.export_json("chemistry_export.json")
+    return {"path": path}
